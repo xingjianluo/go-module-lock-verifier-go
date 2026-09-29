@@ -394,3 +394,47 @@ func copyDir(t *testing.T, src string) string {
 	}
 	return dst
 }
+
+func TestManifestMalformedClassifiedByVerify(t *testing.T) {
+	cacheRoot, moduleDir, v := fixture(t)
+	writeMain(t, moduleDir,
+		"module example.com/main\nrequire example.com/a v1.0\n") // bad version
+	_, err := v.Verify(context.Background(), opts(cacheRoot, moduleDir))
+	if err == nil {
+		t.Fatal("expected manifest malformed")
+	}
+	if !hasCode(err, ErrManifestMalformed) {
+		t.Fatalf("want manifest malformed, got %v", err)
+	}
+	t.Logf("malformed manifest classified: %v", err)
+}
+
+func TestVersionConflictClassifiedByVerify(t *testing.T) {
+	cacheRoot := t.TempDir()
+	putModule(t, cacheRoot, "example.com/a", "v1.0.0",
+		"module example.com/a\nrequire example.com/b v1.2.0 // indirect\n",
+		map[string]string{"a.go": "package a\n"})
+	putModule(t, cacheRoot, "example.com/b", "v1.2.0",
+		"module example.com/b\n", map[string]string{"b.go": "package b\n"})
+	moduleDir := t.TempDir()
+	writeMain(t, moduleDir,
+		"module example.com/main\nrequire example.com/a v1.0.0\nexclude example.com/b v1.2.0\n")
+	_, _, _, err := New().EnsureLock(context.Background(), opts(cacheRoot, moduleDir))
+	if !hasCode(err, ErrVersionConflict) {
+		t.Fatalf("want version conflict, got %v", err)
+	}
+	t.Logf("version conflict classified: %v", err)
+}
+
+func TestVerifyWithoutLockSucceedsWhenCacheComplete(t *testing.T) {
+	cacheRoot, moduleDir, v := fixture(t)
+	// No go.lock present: current-state verification against cache.
+	rep, err := v.Verify(context.Background(), opts(cacheRoot, moduleDir))
+	if err != nil {
+		t.Fatalf("verify without lock should succeed on complete cache: %v", err)
+	}
+	if rep.LockPresent || rep.Checked != 2 {
+		t.Fatalf("unexpected report: %+v", rep)
+	}
+	t.Log("verify without lock OK (current-state, nothing to drift)")
+}

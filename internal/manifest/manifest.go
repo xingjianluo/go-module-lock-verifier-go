@@ -425,14 +425,6 @@ func (p *Parser) parseRequire(line, pos int, text string, indirect bool,
 	})
 }
 
-func splitModuleVersion(token string) (path, version string, hadAt bool) {
-	i := strings.LastIndex(token, "@")
-	if i < 0 {
-		return token, "", false
-	}
-	return token[:i], token[i+1:], true
-}
-
 func (p *Parser) parseReplace(line int, text string, m *Manifest,
 	errs *Errors, seen map[string]int) {
 	left, right, ok := strings.Cut(text, "=>")

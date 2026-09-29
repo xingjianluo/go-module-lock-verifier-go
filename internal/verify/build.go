@@ -233,6 +233,39 @@ func threeWayDiff(ctx context.Context, cch cache.Cache, lock, expected *lockfile
 
 	for _, pth := range paths {
 		r := byPath[pth]
+		if lock == nil {
+			// No lock: current-state content check only; there are no lock
+			// rows to contradict the declarations.
+			if r.e == nil {
+				continue
+			}
+			e := r.e
+			chain := append([]string(nil), e.IntroducedBy...)
+			mod, merr := cch.Module(ctx, cache.ModuleRef{Path: pth, Version: e.Version})
+			if merr != nil {
+				if ce, ok := cache.AsError(merr); ok && ce.Code == cache.CacheErrMissingModule {
+					presentDiffs = append(presentDiffs, DiffEntry{
+						Path: pth, IntroducedBy: chain, Field: "present",
+						Expected: "cached", Actual: "missing",
+					})
+					continue
+				}
+				return nil, nil, nil, merr
+			}
+			if !digestEqual(mod.GoModDigest, e.GoModDigest) {
+				checksumDiffs = append(checksumDiffs, DiffEntry{
+					Path: pth, IntroducedBy: chain, Field: "go_mod_digest",
+					Expected: e.GoModDigest, Actual: mod.GoModDigest,
+				})
+			}
+			if !digestEqual(mod.TreeDigest, e.TreeDigest) {
+				checksumDiffs = append(checksumDiffs, DiffEntry{
+					Path: pth, IntroducedBy: chain, Field: "tree_digest",
+					Expected: e.TreeDigest, Actual: mod.TreeDigest,
+				})
+			}
+			continue
+		}
 		if r.l == nil && r.e != nil {
 			tamperDiffs = append(tamperDiffs, DiffEntry{
 				Path: pth, IntroducedBy: r.e.IntroducedBy, Field: "present",

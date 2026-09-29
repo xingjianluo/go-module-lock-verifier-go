@@ -73,13 +73,13 @@ require b.com/m v1.2.0
 func TestRejectedEntryCodes(t *testing.T) {
 	src := "module example.com/main\n" +
 		"require good.com/m v1.0.0\n" +
-		"require badver.com/m v1.0\n" +          // bad version
-		"require nover.com/m\n" +                // missing version
-		"require \"\" v1.0.0\n" +                // invalid token -> bad path
-		"exclude e.com/m v1.x.0\n" +             // bad version in exclude
-		"replace r.com/m =>\n" +                 // empty RHS
-		"replace r.com/m => other.com/m\n" +     // module replacement missing version
-		"replace r.com/m => other.com/m v1\n" +  // bad replacement version
+		"require badver.com/m v1.0\n" + // bad version
+		"require nover.com/m\n" + // missing version
+		"require \"\" v1.0.0\n" + // invalid token -> bad path
+		"exclude e.com/m v1.x.0\n" + // bad version in exclude
+		"replace r.com/m =>\n" + // empty RHS
+		"replace r.com/m => other.com/m\n" + // module replacement missing version
+		"replace r.com/m => other.com/m v1\n" + // bad replacement version
 		"require a.com/m v1.0.0\n" +
 		"require a.com/m v1.0.0\n" // duplicate require: Go allows same version, keep it
 	_, err := parseT(t, src)
@@ -91,10 +91,10 @@ func TestRejectedEntryCodes(t *testing.T) {
 		t.Fatalf("want manifest.Errors, got %T", err)
 	}
 	want := map[EntryErrorCode]bool{
-		EntryErrBadVersion:      false,
-		EntryErrEmptyVersion:    false,
-		EntryErrBadPath:         false,
-		EntryErrInvalidReplace:  false,
+		EntryErrBadVersion:     false,
+		EntryErrEmptyVersion:   false,
+		EntryErrBadPath:        false,
+		EntryErrInvalidReplace: false,
 	}
 	for _, e := range errs {
 		var ee *EntryError

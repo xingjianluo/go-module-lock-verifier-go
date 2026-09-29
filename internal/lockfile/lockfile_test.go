@@ -20,11 +20,11 @@ func sampleLock() *Lock {
 			},
 			{
 				Path: "a.com/m", Version: "v0.9.0", Direct: false,
-				Replaced:     true,
+				Replaced:      true,
 				ReplaceSource: "a.com/m@",
-				GoModDigest:  "sha256:" + stringsRepeat("3", 64),
-				TreeDigest:   "sha256:" + stringsRepeat("4", 64),
-				IntroducedBy: []string{"example.com/main", "b.com/m@v1.2.0"},
+				GoModDigest:   "sha256:" + stringsRepeat("3", 64),
+				TreeDigest:    "sha256:" + stringsRepeat("4", 64),
+				IntroducedBy:  []string{"example.com/main", "b.com/m@v1.2.0"},
 			},
 		},
 	}

@@ -165,12 +165,46 @@ func TestStaleLockDistinguishedFromTampered(t *testing.T) {
 	}
 	_, err = v.Verify(ctx, o)
 	if err == nil {
-		t.Fatal("expected tampered lock error")
+		t.Fatal("expected checksum mismatch for edited-and-rehashed digest")
 	}
+	if !hasCode(err, ErrChecksumMismatch) {
+		t.Fatalf("want checksum mismatch, got %v", err)
+	}
+	if hasCode(err, ErrLockTampered) {
+		t.Fatal("a self-consistent lock with a bad digest must not claim self-hash tampering")
+	}
+	t.Logf("edited-and-rehashed digest classified as checksum mismatch:\n%v", err)
+}
+
+func TestTamperedStructuralFieldAfterRehash(t *testing.T) {
+	// Editing a declaration-derived field (version) while keeping both hashes
+	// self-consistent is structural tampering and must be distinguished from a
+	// pure cache digest drift.
+	cacheRoot, moduleDir, v := fixture(t)
+	ctx := context.Background()
+	o := opts(cacheRoot, moduleDir)
+	if _, _, _, err := v.EnsureLock(ctx, o); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(moduleDir, "go.lock")
+	l, lerr := lockfile.Unmarshal(mustRead(t, lockPath))
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	l.Entries[0].Version = "v9.9.9"
+	l.LockHash = l.SelfHash()
+	data, merr := lockfile.Marshal(l)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	if err := os.WriteFile(lockPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := v.Verify(ctx, o)
 	if !hasCode(err, ErrLockTampered) {
-		t.Fatalf("want tampered, got %v", err)
+		t.Fatalf("want structural tamper, got %v", err)
 	}
-	t.Logf("tampered-row classified:\n%v", err)
+	t.Logf("structural tamper classified:\n%v", err)
 }
 
 func TestTamperedLockHashDirectly(t *testing.T) {

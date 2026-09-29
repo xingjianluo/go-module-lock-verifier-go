@@ -162,6 +162,9 @@ func (o Options) lockPath() string {
 	return filepath.Join(o.ModuleDir, "go.lock")
 }
 
+// EffectiveLockPath returns the lock file location this configuration uses.
+func (o Options) EffectiveLockPath() string { return o.lockPath() }
+
 // Verifier is stateless; every call uses independent local state.
 type Verifier struct{}
 
@@ -271,7 +274,7 @@ func (v *Verifier) run(ctx context.Context, opts Options, locking bool) (*Report
 		return nil, gerr
 	}
 
-	// 5. Build the expected lock and, when a lock exists, compare rows.
+	// 5. Build the expected lock from the resolved declarations.
 	expected, err := buildExpectedLock(ctx, cch, m, res)
 	if err != nil {
 		return nil, err
@@ -283,37 +286,40 @@ func (v *Verifier) run(ctx context.Context, opts Options, locking bool) (*Report
 		Checked:      len(expected.Entries),
 	}
 
-	if existing != nil {
-		if diffs := diffLocks(existing, expected); len(diffs) > 0 {
-			// Declarations hash matched and the self hash verified, yet rows
-			// differ from resolution: the recorded content was edited, i.e.
-			// tampering with a recomputed self hash.
-			failures = append(failures, &Failure{
-				Code:   ErrLockTampered,
-				Detail: fmt.Sprintf("%d locked row(s) do not match declarations", len(diffs)),
-				Diffs:  diffs,
-			})
-		}
-	}
-
-	// 6. Independently verify digests against the local cache.
-	cdiffs, cerr := verifyDigests(ctx, cch, existingOrExpected(existing, expected))
+	// 5/6. Three-way comparison: LOCK records vs EXPECTED (derived from the
+	//      current declarations) vs ACTUAL local cache content.
+	//      Declarations already matched (not stale) and the self hash verified.
+	//        structural lock-vs-declaration diff -> ErrLockTampered
+	//        recorded digest vs cache diff       -> ErrChecksumMismatch
+	//        dependency absent from cache        -> ErrMissingDependency
+	tamperDiffs, checksumDiffs, presentDiffs, cerr := threeWayDiff(ctx, cch, existing, expected)
 	if cerr != nil {
 		return nil, cerr
 	}
-	report.Diffs = cdiffs
-	if len(cdiffs) > 0 {
-		code := ErrChecksumMismatch
-		for _, d := range cdiffs {
-			if d.Field == "present" {
-				code = ErrMissingDependency
-				break
-			}
-		}
+	report.Diffs = append(report.Diffs, tamperDiffs...)
+	report.Diffs = append(report.Diffs, checksumDiffs...)
+	report.Diffs = append(report.Diffs, presentDiffs...)
+	sortDiffs(report.Diffs)
+
+	if len(tamperDiffs) > 0 {
 		failures = append(failures, &Failure{
-			Code:   code,
-			Detail: fmt.Sprintf("%d dependency difference(s) versus the local cache", len(cdiffs)),
-			Diffs:  cdiffs,
+			Code:   ErrLockTampered,
+			Detail: fmt.Sprintf("%d locked field(s) contradict the current declarations", len(tamperDiffs)),
+			Diffs:  tamperDiffs,
+		})
+	}
+	if len(presentDiffs) > 0 {
+		failures = append(failures, &Failure{
+			Code:   ErrMissingDependency,
+			Detail: fmt.Sprintf("%d dependency(ies) absent from the local cache", len(presentDiffs)),
+			Diffs:  presentDiffs,
+		})
+	}
+	if len(checksumDiffs) > 0 {
+		failures = append(failures, &Failure{
+			Code:   ErrChecksumMismatch,
+			Detail: fmt.Sprintf("%d dependency checksum(s) do not match the local cache", len(checksumDiffs)),
+			Diffs:  checksumDiffs,
 		})
 	}
 
@@ -321,13 +327,6 @@ func (v *Verifier) run(ctx context.Context, opts Options, locking bool) (*Report
 		return report, sortFailures(failures)
 	}
 	return report, nil
-}
-
-func existingOrExpected(existing, expected *lockfile.Lock) *lockfile.Lock {
-	if existing != nil {
-		return existing
-	}
-	return expected
 }
 
 func sortFailures(fl FailureList) FailureList {

@@ -87,107 +87,8 @@ func replacementPath(m *manifest.Manifest, logicalPath, version string) (string,
 	return logicalPath, version, false
 }
 
-// diffLocks compares an existing lock against freshly resolved expectations.
-// Every row identifies the module, the field, expected and actual values, and
-// the introducer chain.
-func diffLocks(existing, expected *lockfile.Lock) []DiffEntry {
-	expByPath := map[string]lockfile.Entry{}
-	for _, e := range expected.Entries {
-		expByPath[e.Path] = e
-	}
-	gotByPath := map[string]lockfile.Entry{}
-	for _, e := range existing.Entries {
-		gotByPath[e.Path] = e
-	}
-
-	var diffs []DiffEntry
-	compare := func(path string, got, exp lockfile.Entry, present bool) {
-		chain := append([]string(nil), exp.IntroducedBy...)
-		if !present {
-			diffs = append(diffs, DiffEntry{Path: path, IntroducedBy: chain,
-				Field: "present", Expected: "locked", Actual: "absent"})
-			return
-		}
-		if got.Version != exp.Version {
-			diffs = append(diffs, DiffEntry{Path: path, IntroducedBy: chain,
-				Field: "version", Expected: exp.Version, Actual: got.Version})
-		}
-		if !digestEqual(got.GoModDigest, exp.GoModDigest) {
-			diffs = append(diffs, DiffEntry{Path: path, IntroducedBy: chain,
-				Field: "go_mod_digest", Expected: exp.GoModDigest, Actual: got.GoModDigest})
-		}
-		if !digestEqual(got.TreeDigest, exp.TreeDigest) {
-			diffs = append(diffs, DiffEntry{Path: path, IntroducedBy: chain,
-				Field: "tree_digest", Expected: exp.TreeDigest, Actual: got.TreeDigest})
-		}
-		if got.Direct != exp.Direct {
-			diffs = append(diffs, DiffEntry{Path: path, IntroducedBy: chain,
-				Field: "direct", Expected: fmt.Sprintf("%v", exp.Direct),
-				Actual: fmt.Sprintf("%v", got.Direct)})
-		}
-	}
-
-	for _, exp := range expected.Entries {
-		got, ok := gotByPath[exp.Path]
-		if !ok {
-			diffs = append(diffs, DiffEntry{Path: exp.Path, IntroducedBy: exp.IntroducedBy,
-				Field: "present", Expected: "locked", Actual: "absent"})
-			continue
-		}
-		compare(exp.Path, got, exp, true)
-	}
-	for _, got := range existing.Entries {
-		if _, ok := expByPath[got.Path]; !ok {
-			diffs = append(diffs, DiffEntry{Path: got.Path, IntroducedBy: got.IntroducedBy,
-				Field: "present", Expected: "absent", Actual: "locked"})
-		}
-	}
-	sortDiffs(diffs)
-	return diffs
-}
-
 func digestEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
-}
-
-// verifyDigests recomputes digests from the local cache and compares them with
-// the lock rows. A missing cache entry is reported on "present" as
-// ErrMissingDependency by the caller's graph pass; here an absent module that
-// the lock nonetheless records surfaces as a present=false diff, and digest
-// differences are checksum mismatches.
-func verifyDigests(ctx context.Context, cch cache.Cache, l *lockfile.Lock) ([]DiffEntry, error) {
-	var diffs []DiffEntry
-	for _, e := range l.Entries {
-		var mod *cache.Module
-		var err error
-		if e.LocalDir != "" {
-			mod, err = cache.LocalModule(cache.ModuleRef{Path: e.Path, Version: e.Version}, e.LocalDir)
-		} else {
-			effPath := e.Path
-			if e.ReplacePath != "" {
-				effPath = e.ReplacePath
-			}
-			mod, err = cch.Module(ctx, cache.ModuleRef{Path: effPath, Version: e.Version})
-		}
-		if err != nil {
-			if ce, ok := cache.AsError(err); ok && ce.Code == cache.CacheErrMissingModule {
-				diffs = append(diffs, DiffEntry{Path: e.Path, IntroducedBy: e.IntroducedBy,
-					Field: "present", Expected: "cached", Actual: "missing"})
-				continue
-			}
-			return nil, err
-		}
-		if !digestEqual(mod.GoModDigest, e.GoModDigest) {
-			diffs = append(diffs, DiffEntry{Path: e.Path, IntroducedBy: e.IntroducedBy,
-				Field: "go_mod_digest", Expected: e.GoModDigest, Actual: mod.GoModDigest})
-		}
-		if !digestEqual(mod.TreeDigest, e.TreeDigest) {
-			diffs = append(diffs, DiffEntry{Path: e.Path, IntroducedBy: e.IntroducedBy,
-				Field: "tree_digest", Expected: e.TreeDigest, Actual: mod.TreeDigest})
-		}
-	}
-	sortDiffs(diffs)
-	return diffs, nil
 }
 
 // EnsureLock builds the expected lock and writes it atomically when the on-disk
@@ -293,4 +194,137 @@ func sortDiffs(d []DiffEntry) {
 		}
 		return d[i].Field < d[j].Field
 	})
+}
+
+// threeWayDiff classifies differences between the lock, the freshly resolved
+// declarations and the actual local cache, keeping failure causes distinct:
+//
+//	tamperDiffs    locked structural fields contradict the current declarations
+//	               (version / direct / replacement / presence)
+//	checksumDiffs  a recorded go.mod/tree digest differs from actual cache content
+//	presentDiffs   a dependency cannot be found in the local cache
+//
+// Digests are anchored to the lock and checked purely against the cache,
+// because they cannot be re-derived from go.mod declarations. Editing a lock
+// without recomputing its self hash is rejected earlier as tampering.
+func threeWayDiff(ctx context.Context, cch cache.Cache, lock, expected *lockfile.Lock) (
+	tamperDiffs, checksumDiffs, presentDiffs []DiffEntry, err error) {
+
+	type pair struct{ l, e *lockfile.Entry }
+	byPath := map[string]pair{}
+	for i := range expected.Entries {
+		e := expected.Entries[i]
+		byPath[e.Path] = pair{e: &e}
+	}
+	if lock != nil {
+		for i := range lock.Entries {
+			l := lock.Entries[i]
+			r := byPath[l.Path]
+			r.l = &l
+			byPath[l.Path] = r
+		}
+	}
+
+	paths := make([]string, 0, len(byPath))
+	for pth := range byPath {
+		paths = append(paths, pth)
+	}
+	sort.Strings(paths)
+
+	for _, pth := range paths {
+		r := byPath[pth]
+		if r.l == nil && r.e != nil {
+			tamperDiffs = append(tamperDiffs, DiffEntry{
+				Path: pth, IntroducedBy: r.e.IntroducedBy, Field: "present",
+				Expected: "locked", Actual: "absent",
+			})
+			continue
+		}
+		if r.e == nil && r.l != nil {
+			tamperDiffs = append(tamperDiffs, DiffEntry{
+				Path: pth, IntroducedBy: r.l.IntroducedBy, Field: "present",
+				Expected: "absent (not in declarations)", Actual: "locked",
+			})
+			continue
+		}
+		e := r.e
+		l := r.l
+		if l == nil {
+			l = e // no lock present: pure current-state content check
+		}
+
+		if lock != nil {
+			chain := append([]string(nil), e.IntroducedBy...)
+			if l.Version != e.Version {
+				tamperDiffs = append(tamperDiffs, DiffEntry{
+					Path: pth, IntroducedBy: chain, Field: "version",
+					Expected: e.Version, Actual: l.Version,
+				})
+			}
+			if l.Direct != e.Direct {
+				tamperDiffs = append(tamperDiffs, DiffEntry{
+					Path: pth, IntroducedBy: chain, Field: "direct",
+					Expected: fmt.Sprintf("%v", e.Direct), Actual: fmt.Sprintf("%v", l.Direct),
+				})
+			}
+			if l.Replaced != e.Replaced || l.ReplaceSource != e.ReplaceSource ||
+				l.ReplacePath != e.ReplacePath || l.LocalDir != e.LocalDir {
+				tamperDiffs = append(tamperDiffs, DiffEntry{
+					Path: pth, IntroducedBy: chain, Field: "replace",
+					Expected: replaceSig(e), Actual: replaceSig(l),
+				})
+			}
+		}
+
+		var mod *cache.Module
+		var cerr error
+		if l.LocalDir != "" {
+			mod, cerr = cache.LocalModule(cache.ModuleRef{Path: pth, Version: l.Version}, l.LocalDir)
+		} else {
+			effPath := pth
+			if l.ReplacePath != "" {
+				effPath = l.ReplacePath
+			}
+			mod, cerr = cch.Module(ctx, cache.ModuleRef{Path: effPath, Version: l.Version})
+		}
+		chain := append([]string(nil), l.IntroducedBy...)
+		if cerr != nil {
+			if ce, ok := cache.AsError(cerr); ok && ce.Code == cache.CacheErrMissingModule {
+				presentDiffs = append(presentDiffs, DiffEntry{
+					Path: pth, IntroducedBy: chain, Field: "present",
+					Expected: "cached", Actual: "missing",
+				})
+				continue
+			}
+			return nil, nil, nil, cerr
+		}
+
+		for _, d := range []struct {
+			field, recorded, actual string
+		}{
+			{"go_mod_digest", l.GoModDigest, mod.GoModDigest},
+			{"tree_digest", l.TreeDigest, mod.TreeDigest},
+		} {
+			if !digestEqual(d.recorded, d.actual) {
+				checksumDiffs = append(checksumDiffs, DiffEntry{
+					Path: pth, IntroducedBy: chain, Field: d.field,
+					Expected: d.recorded, Actual: d.actual,
+				})
+			}
+		}
+	}
+	sortDiffs(tamperDiffs)
+	sortDiffs(checksumDiffs)
+	sortDiffs(presentDiffs)
+	return tamperDiffs, checksumDiffs, presentDiffs, nil
+}
+
+func replaceSig(e *lockfile.Entry) string {
+	if !e.Replaced {
+		return "none"
+	}
+	if e.LocalDir != "" {
+		return "local:" + e.LocalDir
+	}
+	return e.ReplacePath + "@" + e.Version + " (from " + e.ReplaceSource + ")"
 }

@@ -25,15 +25,19 @@ const FormatVersion = "gmlv1"
 
 // Entry is one locked dependency.
 type Entry struct {
-	Path          string   `json:"path"`
-	Version       string   `json:"version"`
-	Direct        bool     `json:"direct"`
-	Replaced      bool     `json:"replaced"`
-	ReplaceSource string   `json:"replace_source,omitempty"`
-	LocalDir      string   `json:"local_dir,omitempty"`
-	GoModDigest   string   `json:"go_mod_digest"`
-	TreeDigest    string   `json:"tree_digest"`
-	IntroducedBy  []string `json:"introduced_by"`
+	Path          string `json:"path"`
+	Version       string `json:"version"`
+	Direct        bool   `json:"direct"`
+	Replaced      bool   `json:"replaced"`
+	ReplaceSource string `json:"replace_source,omitempty"`
+	// ReplacePath is the effective module path served from the cache when the
+	// replacement redirects to another module (path-only version pins keep the
+	// same path so this stays empty).
+	ReplacePath  string   `json:"replace_path,omitempty"`
+	LocalDir     string   `json:"local_dir,omitempty"`
+	GoModDigest  string   `json:"go_mod_digest"`
+	TreeDigest   string   `json:"tree_digest"`
+	IntroducedBy []string `json:"introduced_by"`
 }
 
 // Lock is the on-disk lock document. Entries are always stored sorted by path.
@@ -124,6 +128,7 @@ func canonicalRender(l *Lock) []byte {
 		fmt.Fprintf(&b, "  direct\t%t\n", e.Direct)
 		fmt.Fprintf(&b, "  replaced\t%t\n", e.Replaced)
 		fmt.Fprintf(&b, "  replace_source\t%d\t%s\n", len(e.ReplaceSource), e.ReplaceSource)
+		fmt.Fprintf(&b, "  replace_path\t%d\t%s\n", len(e.ReplacePath), e.ReplacePath)
 		fmt.Fprintf(&b, "  local_dir\t%d\t%s\n", len(e.LocalDir), e.LocalDir)
 		fmt.Fprintf(&b, "  go_mod_digest\t%d\t%s\n", len(e.GoModDigest), e.GoModDigest)
 		fmt.Fprintf(&b, "  tree_digest\t%d\t%s\n", len(e.TreeDigest), e.TreeDigest)

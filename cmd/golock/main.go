@@ -181,6 +181,11 @@ func runLock(f flags) int {
 }
 
 func runVerify(f flags) int {
+	if f.workPath != "" {
+		// verify is the single-module spelling of the same read-only check;
+		// with -work it is exactly audit.
+		return runAudit(f)
+	}
 	res, errs, err := verify.Run(verify.Options{
 		ManifestPath: f.modPath,
 		LockPath:     f.lockPath,

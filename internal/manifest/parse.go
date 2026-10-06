@@ -12,11 +12,12 @@ import (
 	"github.com/xingjianluo/go-module-lock-verifier-go/internal/model"
 )
 
-// canonical module version: vMAJOR.MINOR.PATCH with optional prerelease /
-// build metadata / +incompatible. Go pseudo-versions match as prerelease
-// strings (e.g. v0.0.0-20210101000000-abcdef123456).
+// canonical module version: vMAJOR.MINOR.PATCH with optional prerelease and
+// optional build metadata (identifiers may contain hyphens, which Go
+// pseudo-versions such as v0.0.0-20210101000000-abcdef123456 rely on), and
+// the +incompatible suffix.
 var moduleVersionRe = regexp.MustCompile(
-	`^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$`)
+	`^v\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 
 var goVersionRe = regexp.MustCompile(`^\d+\.\d+(?:\.\d+)?(?:[a-z]+\d*)?$`)
 

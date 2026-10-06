@@ -53,8 +53,15 @@ func Run(opts Options) (*Result, []error, error) {
 	if len(errs) > 0 {
 		return nil, errs, nil
 	}
+	return RunManifest(mf, opts.LockPath, opts.Resolver)
+}
 
-	data, err := os.ReadFile(opts.LockPath)
+// RunManifest is the manifest-agnostic core of Run: callers that already
+// hold a normalized manifest (for example a merged multi-module workspace)
+// audit it against the lock and cache directly. It is strictly read-only:
+// neither the lock file nor the module cache is ever written.
+func RunManifest(mf *model.Manifest, lockPath string, resOpts resolver.Options) (*Result, []error, error) {
+	data, err := os.ReadFile(lockPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read lock: %w", err)
 	}
@@ -69,14 +76,14 @@ func Run(opts Options) (*Result, []error, error) {
 		errs2 = append(errs2, err)
 	}
 
-	modules, resErrs, err := resolver.Resolve(mf, opts.Resolver)
+	modules, resErrs, err := resolver.Resolve(mf, resOpts)
 	if err != nil {
 		return nil, nil, err
 	}
 	errs2 = append(errs2, resErrs...)
 
 	report := &model.DiffReport{ModulePath: mf.ModulePath}
-	compareLocked(report, &errs2, lf, modules, opts.Resolver.ModuleCache)
+	compareLocked(report, &errs2, lf, modules, resOpts.ModuleCache)
 
 	sort.SliceStable(errs2, func(i, j int) bool { return errs2[i].Error() < errs2[j].Error() })
 	return &Result{Report: report, Lock: lf}, errs2, nil

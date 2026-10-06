@@ -1,13 +1,16 @@
-// Command golock generates and verifies reproducible module locks offline.
+// Command golock generates and verifies reproducible module locks offline,
+// for a single module or a multi-module workspace.
 //
 // Usage:
 //
-//	golock lock   [-mod go.mod] [-lock go.lock] [-cache GOMODCACHE]
-//	golock verify [-mod go.mod] [-lock go.lock] [-cache GOMODCACHE]
+//	golock lock   [-mod go.mod | -workspace golock.work] [-lock go.lock] [-cache GOMODCACHE] [-json]
+//	golock verify [-mod go.mod | -workspace golock.work] [-lock go.lock] [-cache GOMODCACHE] [-json]
+//	golock audit  [-mod go.mod | -workspace golock.work] [-lock go.lock] [-cache GOMODCACHE] [-json]
 //
-// Both subcommands are read-only against the module cache. lock writes the
-// lock file atomically only when regeneration changes it; verify never
-// writes it.
+// All subcommands are read-only against the module cache. lock writes the
+// lock file atomically and only when regeneration changes it and resolution
+// succeeded completely; verify/audit never write it. audit is an alias of
+// verify emphasizing the read-only change-audit use case.
 package main
 
 import (
@@ -18,15 +21,19 @@ import (
 	"github.com/xingjianluo/go-module-lock-verifier-go/internal/lockfile"
 	"github.com/xingjianluo/go-module-lock-verifier-go/internal/manifest"
 	"github.com/xingjianluo/go-module-lock-verifier-go/internal/model"
+	"github.com/xingjianluo/go-module-lock-verifier-go/internal/report"
 	"github.com/xingjianluo/go-module-lock-verifier-go/internal/resolver"
 	"github.com/xingjianluo/go-module-lock-verifier-go/internal/verify"
+	"github.com/xingjianluo/go-module-lock-verifier-go/internal/workspace"
 )
 
 type flags struct {
-	modPath  string
-	lockPath string
-	cache    string
-	workDir  string
+	modPath   string
+	lockPath  string
+	cache     string
+	workDir   string
+	workspace string
+	jsonOut   bool
 }
 
 func main() {
@@ -62,8 +69,8 @@ func main() {
 	switch cmd {
 	case "lock":
 		code = runLock(f)
-	case "verify":
-		code = runVerify(f)
+	case "verify", "audit":
+		code = runAudit(f, cmd)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -73,84 +80,182 @@ func main() {
 	os.Exit(code)
 }
 
-func runLock(f flags) int {
+// loadDeclarations resolves the declaration set for a run: either a single
+// go.mod or a whole workspace merged into one effective manifest.
+func loadDeclarations(f flags) (*model.Manifest, []error, error) {
+	if f.workspace != "" {
+		ws, werrs, err := workspace.Load(f.workspace)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(werrs) > 0 {
+			return nil, werrs, nil
+		}
+		mf, merrs := ws.Merge()
+		if len(merrs) > 0 {
+			return nil, merrs, nil
+		}
+		return mf, nil, nil
+	}
 	mf, rejects, err := manifest.ParseFile(f.modPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "golock: read manifest:", err)
-		return 2
+		return nil, nil, fmt.Errorf("read manifest: %w", err)
 	}
 	if len(rejects) > 0 {
-		fmt.Fprintln(os.Stderr, "golock: manifest rejected:")
-		for _, r := range rejects {
-			fmt.Fprintln(os.Stderr, "  -", r)
-		}
+		return nil, rejects, nil
+	}
+	return mf, nil, nil
+}
+
+func (f flags) resolverOptions() resolver.Options {
+	return resolver.Options{ModuleCache: f.cache, WorkDir: f.workDir}
+}
+
+// emitJSON renders a machine-readable result when -json is set.
+func emitJSON(f flags, r *report.Result) {
+	if !f.jsonOut {
+		return
+	}
+	data, err := report.Marshal(r)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "golock: encode json:", err)
+		return
+	}
+	os.Stdout.Write(data)
+}
+
+func printIssues(errs []error) {
+	for _, e := range errs {
+		fmt.Fprintln(os.Stderr, "  -", classify(e), e)
+	}
+}
+
+func runLock(f flags) int {
+	res := &report.Result{Command: "lock", LockPath: f.lockPath}
+	mf, errs, err := loadDeclarations(f)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "golock:", err)
+		res.Issues = report.Classify([]error{err})
+		emitJSON(f, res)
+		return 2
+	}
+	if mf != nil {
+		res.Subject = mf.ModulePath
+	}
+	if len(errs) > 0 {
+		fmt.Fprintln(os.Stderr, "golock: declarations rejected:")
+		printIssues(errs)
+		res.Issues = report.Classify(errs)
+		emitJSON(f, res)
 		return 1
 	}
 
-	modules, resErrs, err := resolver.Resolve(mf, resolver.Options{
-		ModuleCache: f.cache, WorkDir: f.workDir,
-	})
+	modules, resErrs, err := resolver.Resolve(mf, f.resolverOptions())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "golock:", err)
+		res.Issues = report.Classify([]error{err})
+		emitJSON(f, res)
 		return 2
 	}
-	// Resolution errors (missing modules, conflicts) do not prevent producing
-	// a lock of what was selectable, but they are surfaced and fail the run.
+	if len(resErrs) > 0 {
+		// Atomicity: a failed resolution writes nothing, so a partial or
+		// stale lock is never left behind by a failed run.
+		fmt.Fprintln(os.Stderr, "golock: resolution incomplete; lock not written:")
+		printIssues(resErrs)
+		res.Issues = report.Classify(resErrs)
+		emitJSON(f, res)
+		return 1
+	}
+
 	generated := lockfile.Generate(mf, modules)
 	data, err := lockfile.Marshal(generated)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "golock: marshal lock:", err)
+		res.Issues = report.Classify([]error{err})
+		emitJSON(f, res)
 		return 2
 	}
 
 	var existing *model.LockFile
 	if old, rerr := os.ReadFile(f.lockPath); rerr == nil {
-		lf, uerr := lockfile.Unmarshal(old)
-		if uerr == nil {
+		if lf, uerr := lockfile.Unmarshal(old); uerr == nil {
 			existing = lf
 		}
 	}
+	// Human-readable summaries go to stderr so stdout stays pure JSON
+	// when -json is requested.
+	summary := os.Stdout
+	if f.jsonOut {
+		summary = os.Stderr
+	}
 	if existing != nil && lockfile.Equal(existing, generated) {
-		fmt.Printf("lock %s: already up to date (%d modules)\n", f.lockPath, len(modules))
+		fmt.Fprintf(summary, "lock %s: already up to date (%d modules)\n", f.lockPath, len(modules))
 	} else {
-		if werr := os.WriteFile(f.lockPath, data, 0o644); werr != nil {
+		if werr := lockfile.WriteAtomic(f.lockPath, data, 0o644); werr != nil {
 			fmt.Fprintln(os.Stderr, "golock: write lock:", werr)
+			res.Issues = report.Classify([]error{werr})
+			emitJSON(f, res)
 			return 2
 		}
-		fmt.Printf("lock %s: wrote %d modules\n", f.lockPath, len(modules))
+		fmt.Fprintf(summary, "lock %s: wrote %d modules\n", f.lockPath, len(modules))
 	}
-	for _, e := range resErrs {
-		fmt.Fprintln(os.Stderr, "  !", e)
-	}
-	if len(resErrs) > 0 {
-		return 1
-	}
+	res.OK = true
+	res.ModulesWritten = len(modules)
+	emitJSON(f, res)
 	return 0
 }
 
-func runVerify(f flags) int {
-	res, errs, err := verify.Run(verify.Options{
-		ManifestPath: f.modPath,
-		LockPath:     f.lockPath,
-		Resolver: resolver.Options{
-			ModuleCache: f.cache, WorkDir: f.workDir,
-		},
-	})
+// runAudit performs the read-only change audit shared by verify and audit:
+// it classifies declaration drift (lock_stale), lock tampering
+// (lock_tampered) and cache content mismatches (missing_module /
+// hash_mismatch) without ever modifying the lock or the cache.
+func runAudit(f flags, command string) int {
+	res := &report.Result{Command: command, LockPath: f.lockPath}
+	mf, errs, err := loadDeclarations(f)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "golock:", err)
+		res.Issues = report.Classify([]error{err})
+		emitJSON(f, res)
 		return 2
 	}
-	if res != nil && res.Report != nil {
-		printReport(res.Report)
+	if mf != nil {
+		res.Subject = mf.ModulePath
 	}
-	if len(errs) == 0 {
-		fmt.Println("VERIFY OK: lock matches manifest and local cache")
+	if len(errs) > 0 {
+		fmt.Fprintln(os.Stderr, "golock: declarations rejected:")
+		printIssues(errs)
+		res.Issues = report.Classify(errs)
+		emitJSON(f, res)
+		return 1
+	}
+
+	vres, verrs, err := verify.RunManifest(mf, f.lockPath, f.resolverOptions())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "golock:", err)
+		res.Issues = report.Classify([]error{err})
+		emitJSON(f, res)
+		return 2
+	}
+	if vres != nil && vres.Report != nil && !f.jsonOut {
+		printReport(vres.Report)
+	}
+	if vres != nil {
+		res.Modules = report.ModulesFromReport(vres.Report)
+	}
+	res.Issues = report.Classify(verrs)
+	if len(verrs) == 0 {
+		res.OK = true
+		emitJSON(f, res)
+		if f.jsonOut {
+			fmt.Fprintln(os.Stderr, "VERIFY OK: lock matches manifest and local cache")
+		} else {
+			fmt.Println("VERIFY OK: lock matches manifest and local cache")
+		}
 		return 0
 	}
+	emitJSON(f, res)
 	fmt.Fprintln(os.Stderr, "VERIFY FAILED:")
-	for _, e := range errs {
-		fmt.Fprintln(os.Stderr, "  -", classify(e), e)
-	}
+	printIssues(verrs)
 	return 1
 }
 
@@ -158,6 +263,8 @@ func classify(e error) string {
 	switch e.(type) {
 	case *model.RejectError:
 		return "[manifest]"
+	case *model.WorkspaceError:
+		return "[workspace]"
 	case *model.LockError:
 		return "[lock]"
 	case *model.VerifyError:
@@ -203,6 +310,12 @@ func parseFlags(f *flags, args []string) error {
 				return err
 			}
 			f.modPath = v
+		case "-workspace", "-w":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			f.workspace = v
 		case "-lock", "-o":
 			v, err := next()
 			if err != nil {
@@ -221,6 +334,8 @@ func parseFlags(f *flags, args []string) error {
 				return err
 			}
 			f.workDir = v
+		case "-json":
+			f.jsonOut = true
 		default:
 			return fmt.Errorf("unknown flag %q", a)
 		}
@@ -231,13 +346,16 @@ func parseFlags(f *flags, args []string) error {
 func usage() {
 	fmt.Fprint(os.Stderr, `golock - offline reproducible module locks
 
-  golock lock   [-mod go.mod] [-lock go.lock] [-cache DIR]
-  golock verify [-mod go.mod] [-lock go.lock] [-cache DIR]
+  golock lock   [-mod go.mod | -workspace golock.work] [-lock go.lock] [-cache DIR] [-json]
+  golock verify [-mod go.mod | -workspace golock.work] [-lock go.lock] [-cache DIR] [-json]
+  golock audit  [-mod go.mod | -workspace golock.work] [-lock go.lock] [-cache DIR] [-json]
 
 Flags:
-  -mod PATH     manifest file (default go.mod)
-  -lock PATH    lock file (default go.lock)
-  -cache DIR    module cache (default $GOMODCACHE)
-  -workdir DIR  private scratch directory (default fresh temp dir)
+  -mod PATH        manifest file (default go.mod)
+  -workspace PATH  workspace file describing several submodules
+  -lock PATH       lock file (default go.lock)
+  -cache DIR       module cache (default $GOMODCACHE)
+  -workdir DIR     private scratch directory (default fresh temp dir)
+  -json            emit a stable machine-readable JSON result
 `)
 }

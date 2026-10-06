@@ -12,6 +12,10 @@ type Requirement struct {
 	Indirect bool
 	// Line is the 1-based source line this requirement appeared on.
 	Line int
+	// Source, when non-empty, names the submodule (module path) whose
+	// manifest contributed this requirement. Single-module manifests leave
+	// it empty and the resolver falls back to the main module path.
+	Source string
 }
 
 // ReplaceRule is a replace directive. OldVersion may be empty to match every

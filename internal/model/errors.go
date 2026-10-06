@@ -121,6 +121,49 @@ func (e *VerifyError) Error() string {
 	return s
 }
 
+// WorkspaceErrorKind classifies failures of merging a multi-module workspace
+// into one effective declaration set.
+type WorkspaceErrorKind string
+
+const (
+	// WorkspaceRequirementConflict means two submodules require the same
+	// module at different versions; the merge never silently picks one.
+	WorkspaceRequirementConflict WorkspaceErrorKind = "requirement_conflict"
+	// WorkspaceReplaceConflict means two submodules declare replace rules
+	// for the same old path@version pair with different targets.
+	WorkspaceReplaceConflict WorkspaceErrorKind = "replace_conflict"
+	// WorkspaceDuplicateModule means two workspace entries resolve to the
+	// same module path.
+	WorkspaceDuplicateModule WorkspaceErrorKind = "duplicate_module"
+	// WorkspaceModuleUnreadable means a use directive points at a directory
+	// whose go.mod cannot be read or parsed.
+	WorkspaceModuleUnreadable WorkspaceErrorKind = "module_unreadable"
+)
+
+// WorkspaceError is one workspace merge finding. Sources names the
+// submodules involved, with their conflicting declarations.
+type WorkspaceError struct {
+	Kind     WorkspaceErrorKind
+	Module   string
+	Expected string
+	Actual   string
+	// Sources lists "submodule: declaration" strings, sorted, so the
+	// finding always names who introduced the conflict.
+	Sources []string
+	Detail  string
+}
+
+func (e *WorkspaceError) Error() string {
+	s := string(e.Kind)
+	if e.Module != "" {
+		s += ": " + e.Module
+	}
+	if e.Detail != "" {
+		s += ": " + e.Detail
+	}
+	return s
+}
+
 // DiffReport is the human/machine-readable report produced by verification:
 // who introduced each module, and expected vs. actual effective values.
 type DiffReport struct {

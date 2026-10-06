@@ -2,6 +2,18 @@ package manifest
 
 import "strings"
 
+// StripBlockComments removes /* ... */ comments, which may span lines.
+// Exported for sibling parsers (e.g. the workspace file) that share the
+// go.mod lexical conventions.
+func StripBlockComments(data []byte) []byte { return stripBlockComments(data) }
+
+// TokenizeLine splits one line into tokens, honoring double-quoted and
+// back-quoted strings, and returns the trailing line comment content.
+// ok is false when a quoted string is unterminated.
+func TokenizeLine(line string) (toks []string, comment string, ok bool) {
+	return tokenizeLine(line)
+}
+
 // stripBlockComments removes /* ... */ comments, which may span lines.
 // go.mod files do not nest block comments.
 func stripBlockComments(data []byte) []byte {

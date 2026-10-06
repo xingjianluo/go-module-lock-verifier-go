@@ -93,7 +93,11 @@ func Resolve(m *model.Manifest, opts Options) ([]model.LockedModule, []error, er
 
 	mainPath := m.ModulePath
 	for _, req := range m.Requires {
-		e.addRequirement(req.Path, req.Version, mainPath)
+		by := req.Source
+		if by == "" {
+			by = mainPath
+		}
+		e.addRequirement(req.Path, req.Version, by)
 	}
 	e.process()
 	e.validateConflicts()

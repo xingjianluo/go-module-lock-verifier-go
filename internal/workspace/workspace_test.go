@@ -286,3 +286,40 @@ func TestLoadReportsSubmoduleManifestRejects(t *testing.T) {
 		t.Fatalf("reject not attributed to submodule: %s", re.Detail)
 	}
 }
+
+func TestAttributeRewritesWorkspaceIntroducer(t *testing.T) {
+	workPath := writeWorkspace(t, `name example.com/ws
+use ./mod-a
+use ./mod-b
+`, map[string]string{
+		"mod-a": "module example.com/a\ngo 1.22\nrequire example.com/dep v1.2.0\n",
+		"mod-b": "module example.com/b\ngo 1.22\nrequire example.com/dep v1.3.0\nrequire example.com/other v0.1.0\n",
+	})
+	_, merged := loadAndMerge(t, workPath)
+
+	modules := []model.LockedModule{
+		{Path: "example.com/dep", Version: "v1.3.0",
+			IntroducedBy: []string{"example.com/ws"}},
+		{Path: "example.com/other", Version: "v0.1.0",
+			IntroducedBy: []string{"example.com/ws"}},
+		{Path: "example.com/transitive", Version: "v0.0.1",
+			IntroducedBy: []string{"example.com/dep", "example.com/ws"}},
+	}
+	merged.Attribute(modules)
+	for _, m := range modules {
+		t.Logf("%s introduced by %v", m.Path, m.IntroducedBy)
+	}
+	// dep is required by both submodules (at different versions): both named.
+	if got := modules[0].IntroducedBy; len(got) != 2 ||
+		got[0] != "example.com/a" || got[1] != "example.com/b" {
+		t.Fatalf("dep introducedBy = %v", got)
+	}
+	// other is required only by mod-b.
+	if got := modules[1].IntroducedBy; len(got) != 1 || got[0] != "example.com/b" {
+		t.Fatalf("other introducedBy = %v", got)
+	}
+	// Transitive introducers that are real modules stay untouched.
+	if got := modules[2].IntroducedBy; len(got) != 1 || got[0] != "example.com/dep" {
+		t.Fatalf("transitive introducedBy = %v", got)
+	}
+}

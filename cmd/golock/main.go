@@ -92,11 +92,12 @@ func main() {
 
 // declarations loads the effective manifest for lock: either a single go.mod
 // or the merged workspace view. Classified problems come back as []error.
-func declarations(f flags) (mf *model.Manifest, subject string, modules []string, errs []error, err error) {
+// merged is non-nil only in workspace mode and carries provenance.
+func declarations(f flags) (mf *model.Manifest, merged *workspace.Merged, subject string, modules []string, errs []error, err error) {
 	if f.workPath != "" {
 		ws, loadErrs, lerr := workspace.Load(f.workPath)
 		if lerr != nil {
-			return nil, "", nil, nil, lerr
+			return nil, nil, "", nil, nil, lerr
 		}
 		subject = ws.Name
 		for _, m := range ws.Modules {
@@ -105,26 +106,26 @@ func declarations(f flags) (mf *model.Manifest, subject string, modules []string
 			}
 		}
 		if len(loadErrs) > 0 {
-			return nil, subject, modules, loadErrs, nil
+			return nil, nil, subject, modules, loadErrs, nil
 		}
-		merged, mergeErrs := workspace.Merge(ws)
+		m, mergeErrs := workspace.Merge(ws)
 		if len(mergeErrs) > 0 {
-			return nil, subject, modules, mergeErrs, nil
+			return nil, nil, subject, modules, mergeErrs, nil
 		}
-		return merged.Manifest, subject, modules, nil, nil
+		return m.Manifest, m, subject, modules, nil, nil
 	}
 	mf, rejects, perr := manifest.ParseFile(f.modPath)
 	if perr != nil {
-		return nil, "", nil, nil, fmt.Errorf("read manifest: %w", perr)
+		return nil, nil, "", nil, nil, fmt.Errorf("read manifest: %w", perr)
 	}
 	if len(rejects) > 0 {
-		return nil, mf.ModulePath, nil, rejects, nil
+		return nil, nil, mf.ModulePath, nil, rejects, nil
 	}
-	return mf, mf.ModulePath, nil, nil, nil
+	return mf, nil, mf.ModulePath, nil, nil, nil
 }
 
 func runLock(f flags) int {
-	mf, subject, modules, declErrs, err := declarations(f)
+	mf, merged, subject, modules, declErrs, err := declarations(f)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "golock:", err)
 		return 2
@@ -144,6 +145,11 @@ func runLock(f flags) int {
 	// partial selection can never land on disk as a残缺 lock.
 	if len(resErrs) > 0 {
 		return fail(f, "lock", subject, modules, 0, resErrs)
+	}
+	if merged != nil {
+		// Record which submodule (not the abstract workspace) pulled each
+		// dependency in.
+		merged.Attribute(modules2)
 	}
 
 	generated := lockfile.Generate(mf, modules2)

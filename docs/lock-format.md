@@ -27,11 +27,13 @@ module example.com/d v1.0.0 indirect replace-by example.com/fork v2.0.0 hash sha
 | `# golock v1`     | 固定头，标识文件类型与主版本。缺失或不一致 => `lock_malformed`。     |
 | `integrity sha256:<hex>` | 对除本行外其余所有行（保持行序、以换行连接）计算的 SHA-256。任何行被改动都会导致它对不上 => `lock_tampered`。 |
 | `format-version 1`| 锁格式版本。非 `1` => `lock_version_unsupported`。                   |
-| `module-name`     | 生成锁时主模块的 module path；与当前 manifest 不符 => `lock_stale`。 |
-| `manifest-hash`   | 归一化后 `go.mod` 的 `sha256:` 哈希。声明变了它就对不上 => `lock_stale`，与 `integrity` 失败（`lock_tampered`）严格区分。 |
+| `module-name`     | 生成锁时主模块的 module path；工作区锁则为工作区的 `name`。与当前 manifest 不符 => `lock_stale`。 |
+| `manifest-hash`   | 归一化后 `go.mod`（或工作区合并声明集）的 `sha256:` 哈希。声明变了它就对不上 => `lock_stale`，与 `integrity` 失败（`lock_tampered`）严格区分。 |
 
 归一化只保留语义：指令内容排序后连接，忽略源文件中的指令书写顺序与空白。
-因此等价的两份 `go.mod` 一定得到相同的 `manifest-hash`。
+因此等价的两份 `go.mod` 一定得到相同的 `manifest-hash`。工作区模式下被
+哈希的是合并后的统一声明集（合并规则见
+[workspace.md](workspace.md)），同样与 `use` 行书写顺序无关。
 
 ### module 行
 

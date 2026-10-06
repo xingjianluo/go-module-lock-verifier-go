@@ -349,3 +349,31 @@ func compareGoVersion(a, b string) int {
 	}
 	return 0
 }
+
+// Attribute rewrites IntroducedBy entries that name the workspace itself
+// (the merged "main module") to the concrete submodules that declared a
+// requirement for that path, so a generated lock records which submodule
+// pulled each dependency in. Introducers that are real dependency modules
+// (transitive edges) are left untouched. The result is deterministic.
+func (m *Merged) Attribute(modules []model.LockedModule) {
+	byPath := map[string][]string{}
+	for key, srcs := range m.RequireSources {
+		path := key[:strings.LastIndex(key, "@")]
+		for _, s := range srcs {
+			byPath[path] = appendSortedUnique(byPath[path], s)
+		}
+	}
+	for i := range modules {
+		var out []string
+		for _, by := range modules[i].IntroducedBy {
+			if by == m.Manifest.ModulePath {
+				for _, s := range byPath[modules[i].Path] {
+					out = appendSortedUnique(out, s)
+				}
+				continue
+			}
+			out = appendSortedUnique(out, by)
+		}
+		modules[i].IntroducedBy = out
+	}
+}

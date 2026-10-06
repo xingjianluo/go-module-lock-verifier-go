@@ -123,4 +123,61 @@ require example.com/a v1.2.4
 MOD
 run golock verify || true
 
+echo; echo "== 6. workspace: lock two submodules as one =="
+WS="$PROJ/ws"
+mkdir -p "$WS/svc-a" "$WS/svc-b"
+cat > "$WS/golock.work" <<'WORK'
+name example.com/demo-ws
+use ./svc-a
+use ./svc-b
+WORK
+cat > "$WS/svc-a/go.mod" <<'MOD'
+module example.com/svc-a
+
+go 1.23
+
+require example.com/a v1.2.3
+MOD
+cat > "$WS/svc-b/go.mod" <<'MOD'
+module example.com/svc-b
+
+go 1.23
+
+require example.com/a v1.2.3
+MOD
+runws() { (cd "$WS" && "$@"); }
+runws golock lock -work golock.work
+echo "-- merged go.lock --"
+cat "$WS/go.lock"
+
+echo; echo "== 7. workspace audit -json (expect ok:true) =="
+runws golock audit -work golock.work -json
+
+echo; echo "== 8. workspace replace conflict (expect workspace_replace_conflict, no lock) =="
+cat > "$WS/svc-a/go.mod" <<'MOD'
+module example.com/svc-a
+
+go 1.23
+
+require example.com/a v1.2.3
+
+replace example.com/a => example.com/fork-a v1.2.4
+MOD
+cat > "$WS/svc-b/go.mod" <<'MOD'
+module example.com/svc-b
+
+go 1.23
+
+require example.com/a v1.2.3
+
+replace example.com/a => ../local-a
+MOD
+rm -f "$WS/go.lock"
+runws golock lock -work golock.work || true
+if [ -e "$WS/go.lock" ]; then
+  echo "BUG: conflicting workspace left a lock behind"
+else
+  echo "OK: no lock written on conflict"
+fi
+
 echo; echo "== demo complete =="

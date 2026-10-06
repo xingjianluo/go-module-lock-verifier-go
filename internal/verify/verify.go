@@ -54,13 +54,28 @@ func Run(opts Options) (*Result, []error, error) {
 		return nil, errs, nil
 	}
 
-	data, err := os.ReadFile(opts.LockPath)
+	report, lf, errs2, err := Check(mf, opts.LockPath, opts.Resolver)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read lock: %w", err)
+		return nil, nil, err
+	}
+	return &Result{Report: report, Lock: lf}, errs2, nil
+}
+
+// Check compares already-parsed declarations against the lock at lockPath,
+// resolving offline against the local cache. It is strictly read-only: the
+// lock file, the manifest and the module cache are never modified.
+//
+// The returned report always reflects the full module-by-module comparison,
+// even when errors are present, so callers can see everything that drifted
+// in one pass.
+func Check(mf *model.Manifest, lockPath string, res resolver.Options) (*model.DiffReport, *model.LockFile, []error, error) {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read lock: %w", err)
 	}
 	lf, err := lockfile.Unmarshal(data)
 	if err != nil {
-		return nil, []error{err}, nil
+		return nil, nil, []error{err}, nil
 	}
 	// A stale lock is recorded but does not short-circuit: still resolve and
 	// build the diff report so the caller can see what drifted.
@@ -69,17 +84,17 @@ func Run(opts Options) (*Result, []error, error) {
 		errs2 = append(errs2, err)
 	}
 
-	modules, resErrs, err := resolver.Resolve(mf, opts.Resolver)
+	modules, resErrs, err := resolver.Resolve(mf, res)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	errs2 = append(errs2, resErrs...)
 
 	report := &model.DiffReport{ModulePath: mf.ModulePath}
-	compareLocked(report, &errs2, lf, modules, opts.Resolver.ModuleCache)
+	compareLocked(report, &errs2, lf, modules, res.ModuleCache)
 
 	sort.SliceStable(errs2, func(i, j int) bool { return errs2[i].Error() < errs2[j].Error() })
-	return &Result{Report: report, Lock: lf}, errs2, nil
+	return report, lf, errs2, nil
 }
 
 func compareLocked(report *model.DiffReport, errs *[]error, lf *model.LockFile, modules []model.LockedModule, _ string) {

@@ -121,6 +121,60 @@ func (e *VerifyError) Error() string {
 	return s
 }
 
+// WorkspaceErrorKind classifies multi-module workspace failures.
+type WorkspaceErrorKind string
+
+const (
+	// WorkspaceMalformed means the workspace file itself cannot be parsed.
+	WorkspaceMalformed WorkspaceErrorKind = "workspace_malformed"
+	// WorkspaceMissingModule means a "use" directory has no readable go.mod.
+	WorkspaceMissingModule WorkspaceErrorKind = "workspace_missing_module"
+	// WorkspaceDuplicateModule means two "use" directories declare the same
+	// module path.
+	WorkspaceDuplicateModule WorkspaceErrorKind = "workspace_duplicate_module"
+	// WorkspaceReplaceConflict means two submodules map the same
+	// replace source (path[@version]) to different targets.
+	WorkspaceReplaceConflict WorkspaceErrorKind = "workspace_replace_conflict"
+)
+
+// WorkspaceConflictEntry records one submodule's contribution to a conflict.
+type WorkspaceConflictEntry struct {
+	// Module is the submodule's declared module path.
+	Module string
+	// Dir is the submodule directory (as written in the workspace file).
+	Dir string
+	// Rule is the conflicting declaration rendered as text.
+	Rule string
+	// Line is the 1-based line of the declaration inside the submodule's
+	// go.mod (0 when not applicable).
+	Line int
+}
+
+// WorkspaceError is one workspace-level failure. For conflicts, Entries
+// lists every contributing submodule so nothing is silently picked.
+type WorkspaceError struct {
+	Kind    WorkspaceErrorKind
+	Module  string // submodule module path, when the error is module-scoped
+	Dir     string
+	Subject string // e.g. the replace source "old@version" in conflict
+	Entries []WorkspaceConflictEntry
+	Detail  string
+}
+
+func (e *WorkspaceError) Error() string {
+	s := string(e.Kind)
+	if e.Subject != "" {
+		s += ": " + e.Subject
+	}
+	if e.Module != "" {
+		s += ": " + e.Module
+	}
+	if e.Detail != "" {
+		s += ": " + e.Detail
+	}
+	return s
+}
+
 // DiffReport is the human/machine-readable report produced by verification:
 // who introduced each module, and expected vs. actual effective values.
 type DiffReport struct {

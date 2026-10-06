@@ -14,9 +14,10 @@ import (
 
 // canonical module version: vMAJOR.MINOR.PATCH with optional prerelease /
 // build metadata / +incompatible. Go pseudo-versions match as prerelease
-// strings (e.g. v0.0.0-20210101000000-abcdef123456).
+// strings (e.g. v0.0.0-20210101000000-abcdef123456); per semver, prerelease
+// and build identifiers may themselves contain hyphens.
 var moduleVersionRe = regexp.MustCompile(
-	`^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$`)
+	`^v\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 
 var goVersionRe = regexp.MustCompile(`^\d+\.\d+(?:\.\d+)?(?:[a-z]+\d*)?$`)
 
